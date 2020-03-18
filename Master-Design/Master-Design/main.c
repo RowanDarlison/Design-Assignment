@@ -387,3 +387,223 @@ int main(void){
         }
     }
 }
+
+
+
+/*
+
+New Code */
+
+
+#include <avr/io.h>
+#define F_CPU 16000000UL
+#include <util/delay.h>
+#include <stdio.h>
+#include <avr/interrupt.h>
+volatile unsigned int Cnt; //global variable 
+
+int uart_putchar(char c, FILE *stream);
+int uart_getchar(FILE *stream);
+FILE mystdout = FDEV_SETUP_STREAM(uart_putchar, NULL, _FDEV_SETUP_WRITE);
+FILE mystdin = FDEV_SETUP_STREAM(NULL, uart_getchar, _FDEV_SETUP_READ);
+
+//run every 16000000/1024/256 = 61 Hz
+ISR (TIMER0_OVF_vect) {
+    Cnt++; //write value Cnt to PORTC
+    TCNT0 = (255-15); 
+}
+
+int uart_putchar(char c, FILE *stream)
+{
+    loop_until_bit_is_set(UCSR0A, UDRE0);
+    UDR0 = c;
+    return 0;
+}
+
+int uart_getchar(FILE *stream)
+{
+    loop_until_bit_is_set(UCSR0A, RXC0);
+    return UDR0;
+}
+
+void init_uart(void)
+{
+    UCSR0B = (1<<RXEN0) | (1<<TXEN0);
+    UBRR0 = 103;
+    stdout = &mystdout;
+    stdin = &mystdin;
+}
+
+void init_hardware(void)
+{
+    DDRB |=  (1<<PORTB1) | (1<<PORTB2) | (1<<PORTB3) | (1<<PORTB4);
+    PORTB = (1<<PORTB0);
+    PORTD = (1<<PORTD6) | (1<<PORTD7);
+}
+
+void set_row_low(unsigned int row) 
+{
+    if(row == 0) {
+        PORTB =~(1<<PORTB4);
+    } else if(row == 1) {
+        PORTB =~ (1<<PORTB3);
+    } else if(row == 2) {
+        PORTB =~ (1<<PORTB2);
+    } else if(row == 3) {
+        PORTB =~ (1<<PORTB1);
+    }
+}
+
+int col_pushed(void) 
+{
+    if((PINB & (1<<PINB0)) == 0){
+        return 1;
+    } else if((PIND & (1<<PIND7)) == 0){
+        return 2;
+    } else if((PIND & (1<<PIND6)) == 0){
+        return 3;
+    }
+    return 0;
+}
+
+char buttons[4][3] = {{'1', '2', '3'},
+    {'4', '5', '6'},
+    {'7', '8', '9'},
+    {'*', '0', '#'}};
+        
+char get_button(void)
+{
+    
+    for(int row = 0; row < 4; row++) {
+        set_row_low(row);
+        _delay_ms(20);
+        
+        int col = col_pushed();
+        
+        if(col){
+            return buttons[row][col-1];
+        }
+    }
+    return 0;
+}
+
+char get_new_button(void) 
+{
+    static char last_button;
+    char b = get_button();
+    
+    if(b == last_button) return 0;
+    
+    last_button = b;
+    
+    return b;
+}
+
+int main(void){
+    init_hardware();
+    init_uart();
+    TIMSK0 = (1<<TOIE0);
+    TCNT0 = 0;
+    Cnt = 0;
+    TCCR0B = (1<<CS02) | (1<<CS00);
+    sei();
+    char pin[10];
+    char b;
+    int i = 0, j = 0, count = 0;
+    int detection = 0;
+    int disarm = 0;
+    DDRD |= (1<<PORTD2) | (1<<PORTD3) | (1<<PORTD4) | (1<<PORTD5);
+    
+/******************
+
+System Arm
+
+******************/
+    
+    printf("System Booted, built %s on %s\n", __TIME__, __DATE__);
+    while(1){
+        PORTD |= (1<<PORTD2);
+        while(1){
+            b = get_new_button();
+            if((b == '#') && (count == 0)){
+                Cnt = 0;
+                while(Cnt <= 2000){
+                }
+                printf("System is armed\n");
+                PORTD |= (1<<PORTD3);
+                PORTD &= ~(1<<PORTD2);
+                Cnt = 0;
+                break;
+            }
+        }
+        detection = 0;
+/****************
+
+SENSORS
+
+****************/
+
+        while(1){
+            if((PINC & (1<<PORTC0))){
+                detection = 1;
+                break;
+            }
+            else{
+                detection = 0;
+            }
+        }
+/*******************
+
+Keypad
+
+******************/
+
+        while(1){
+            if(detection == 1){
+                Cnt = 0;
+                count = 0;
+                while(Cnt < 10000){
+                    b = get_new_button();
+                    if(b){
+                        pin[i++] = b;
+                    }
+                    if(i >= 4){
+                        pin[4] = 0;
+                        printf("Entered Pin: %s\n", pin);
+                        if((pin[0] == '1') && (pin[1] == '2') && (pin[2] == '3') && (pin[3] == '4')){
+                            disarm = 1;
+                            break;
+                        }else if((pin[0] == '4') && (pin[1] == '3') && (pin[2] == '2') && (pin[3] == '1')){
+                            disarm = 2;
+                            break;
+                        }else{
+                            count ++;
+                            printf("count = %d\n", count);
+                        }
+                        if(count != 3){
+                            i = 0;
+                        }else{
+                            break;
+                        }
+                    }
+                }
+                if(disarm == 0){
+                    PORTD |= (1<<PORTD2) | (1<<PORTD3) | (1<<PORTD4) | (1<<PORTD5);
+                    printf("alarm is set off\n");
+                    break;
+                }else if(disarm == 1){
+                    PORTD |= (1<<PORTD3);
+                    PORTD &= ~(1<<PORTD2);
+                    printf("alarm remains set \n");
+                    break;
+                }else if(disarm == 2){
+                    PORTD |= (1<<PORTD3);
+                    PORTD |= (1<<PORTD4);
+                    printf("silent alarm\n");
+                    break;
+                }
+            }
+        }
+        break;
+    }
+}
